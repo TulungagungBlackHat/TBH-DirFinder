@@ -9,7 +9,7 @@ except ImportError:
     print("[!] requests required: pip install requests", file=sys.stderr)
     sys.exit(2)
 
-VERSION = "3.0"
+VERSION = "3.1"
 REPO = "https://github.com/TulungagungBlackHat/TBH-DirFinder"
 
 def banner():
@@ -94,7 +94,8 @@ def check(session, base, path, args, soft404):
     if args.delay:
         time.sleep(args.delay)
     return {"path": path, "url": url, "status": status, "length": length,
-            "sensitive": path in SENSITIVE, "bypass": bypass}
+            "sensitive": path in SENSITIVE or path.split("/")[-1] in SENSITIVE,
+            "bypass": bypass, "location": out.get("headers", {}).get("Location", "")}
 
 def main():
     parser = argparse.ArgumentParser(description=f"TBH-DirFinder v{VERSION}")
@@ -103,6 +104,10 @@ def main():
     parser.add_argument("-t", "--threads", type=int, default=15)
     parser.add_argument("--status", type=int, nargs="+", help="only report these statuses")
     parser.add_argument("--bypass", action="store_true", help="try 403-bypass header variants on 401/403")
+    parser.add_argument("--depth", type=int, default=0,
+                        help="recurse into discovered directories (0 = no recursion)")
+    parser.add_argument("--max-paths", type=int, default=500,
+                        help="total request budget across all recursion levels")
     parser.add_argument("--proxy", help="e.g. http://127.0.0.1:8080")
     parser.add_argument("--cookie", help="Cookie header value")
     parser.add_argument("-H", "--header", action="append", help="extra header, repeatable")
@@ -136,16 +141,40 @@ def main():
         soft404 = {"status": miss["status"], "length": miss["length"], "tolerance": max(25, miss["length"] // 50)}
 
     print(f"[*] {base} | {len(paths)} paths | {args.threads} threads"
+          + (f" | depth={args.depth} budget={args.max_paths}" if args.depth else "")
           + (" | 403-bypass on" if args.bypass else ""))
     found = []
-    with ThreadPoolExecutor(max_workers=args.threads) as ex:
-        for r in ex.map(lambda p: check(session, base, p, args, soft404), paths):
-            if r:
+    queue = [(base, "")]
+    seen = {base}
+    budget = args.max_paths
+    while queue and budget > 0:
+        root, rel = queue.pop(0)
+        batch = paths[:budget]
+        budget -= len(batch)
+        if rel:
+            print(color("96", f"[*] recursing: {root}", use_color))
+        with ThreadPoolExecutor(max_workers=args.threads) as ex:
+            for r in ex.map(lambda p: check(session, root, p, args, soft404), batch):
+                if not r:
+                    continue
+                if rel:
+                    r["path"] = f"{rel}/{r['path']}"
+                    r["root"] = root
                 found.append(r)
                 tag = color("91", " [SENSITIVE]", use_color) if r["sensitive"] else ""
                 tag += color("92", " [BYPASS]", use_color) if r["bypass"] else ""
                 print(color("93" if r["status"] != 200 else "91",
                             f"[FOUND] {r['status']} {r['url']} ({r['length']}b){tag}", use_color))
+                last = r["path"].split("/")[-1]
+                is_dir = ("." not in last and not r["sensitive"] and
+                          (r["status"] == 200 or
+                           (r["status"] in (301, 302) and
+                            (r["location"].startswith(base) or r["location"].startswith("/")))))
+                if (args.depth and is_dir and r["url"].rstrip("/") not in seen):
+                    seen.add(r["url"].rstrip("/"))
+                    depth_level = r["path"].count("/")
+                    if depth_level < args.depth:
+                        queue.append((r["url"].rstrip("/"), r["path"]))
 
     sensitive = sum(1 for r in found if r["sensitive"])
     print(f"\n[✓] Found {len(found)} | sensitive: {sensitive}")

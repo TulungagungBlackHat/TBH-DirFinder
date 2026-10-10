@@ -18,3 +18,11 @@
 ### Changed
 - Honest versioning and User-Agent with repo link
 - Proper exception handling (no bare except)
+
+## [3.1.0] - 2026-10-11
+### Added
+- Recursive directory discovery: --depth N (0 default, same behavior as before)
+- Request budget guard: --max-paths (default 500) across all levels
+- Same-host recursion only; skips sensitive files and file-like paths
+- 301/302 directory redirects followed for recursion when same-host
+- Findings record which root directory they were discovered under
